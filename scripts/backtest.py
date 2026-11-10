@@ -51,16 +51,33 @@ def fetch_yahoo_chart(ticker, start, end):
                              "AppleWebKit/537.36 (KHTML, like Gecko) "
                              "Chrome/124.0 Safari/537.36",
                "Accept": "application/json"}
-    # Yahoo rate-limits datacenter IPs (HTTP 429) intermittently -- retry
-    # with backoff across both chart hosts before giving up.
+    # Yahoo rate-limits unauthenticated datacenter requests (HTTP 429).
+    # Standard workaround: open a session via fc.yahoo.com, fetch a crumb,
+    # and call the chart API with it; retry with backoff across both hosts.
+    session = requests.Session()
+    crumb = None
+    try:
+        session.get("https://fc.yahoo.com", headers=headers, timeout=15)
+        for host in ("query2.finance.yahoo.com", "query1.finance.yahoo.com"):
+            r = session.get(f"https://{host}/v1/test/getcrumb",
+                            headers=headers, timeout=15)
+            if r.status_code == 200 and r.text and len(r.text) < 50:
+                crumb = r.text.strip()
+                break
+    except Exception as exc:  # noqa: BLE001 -- crumb is best-effort
+        print(f"Crumb fetch failed (continuing without): {exc}")
+    print(f"Yahoo crumb obtained: {bool(crumb)}")
+
     last_exc = None
     result = None
     for attempt in range(8):
         host = ("query1.finance.yahoo.com" if attempt % 2 == 0
                 else "query2.finance.yahoo.com")
+        extra = f"&crumb={crumb}" if (crumb and attempt % 2 == 1) else ""
         try:
-            resp = requests.get(f"https://{host}/v8/finance/chart/{ticker}{params}",
-                                headers=headers, timeout=30)
+            resp = session.get(
+                f"https://{host}/v8/finance/chart/{ticker}{params}{extra}",
+                headers=headers, timeout=30)
             resp.raise_for_status()
             result = resp.json()["chart"]["result"][0]
             break
