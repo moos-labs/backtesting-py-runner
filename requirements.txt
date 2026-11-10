@@ -1,0 +1,4 @@
+backtesting
+pandas
+numpy
+requests
