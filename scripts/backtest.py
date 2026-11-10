@@ -46,18 +46,32 @@ def fetch_yahoo_chart(ticker, start, end):
     """Fetch daily OHLC from Yahoo's chart API directly (no yfinance)."""
     period1 = int(pd.Timestamp(start, tz="UTC").timestamp())
     period2 = int(pd.Timestamp(end, tz="UTC").timestamp())
-    url = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        f"?period1={period1}&period2={period2}&interval=1d"
-    )
-    resp = requests.get(
-        url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
-                                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                  "Chrome/124.0 Safari/537.36"},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    result = resp.json()["chart"]["result"][0]
+    params = f"?period1={period1}&period2={period2}&interval=1d"
+    headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
+                             "AppleWebKit/537.36 (KHTML, like Gecko) "
+                             "Chrome/124.0 Safari/537.36",
+               "Accept": "application/json"}
+    # Yahoo rate-limits datacenter IPs (HTTP 429) intermittently -- retry
+    # with backoff across both chart hosts before giving up.
+    last_exc = None
+    result = None
+    for attempt in range(8):
+        host = ("query1.finance.yahoo.com" if attempt % 2 == 0
+                else "query2.finance.yahoo.com")
+        try:
+            resp = requests.get(f"https://{host}/v8/finance/chart/{ticker}{params}",
+                                headers=headers, timeout=30)
+            resp.raise_for_status()
+            result = resp.json()["chart"]["result"][0]
+            break
+        except Exception as exc:  # noqa: BLE001 -- retry any transient failure
+            last_exc = exc
+            wait = min(10 * (attempt + 1), 60)
+            print(f"Yahoo fetch attempt {attempt + 1} via {host} failed: "
+                  f"{exc}; retrying in {wait}s...")
+            time.sleep(wait)
+    if result is None:
+        raise RuntimeError(f"Yahoo chart fetch failed after retries: {last_exc}")
     ts = result["timestamp"]
     quote = result["indicators"]["quote"][0]
     df = pd.DataFrame({
